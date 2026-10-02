@@ -80,11 +80,11 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Center Room Status Bar (Inside Room) */}
         {mounted && roomId && (
-          <div className="hidden md:flex items-center gap-3 px-3.5 py-1.5 rounded-full bg-slate-900/90 border border-slate-800 shadow-inner">
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Room:</span>
+          <div className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-full bg-slate-900/90 border border-slate-800 shadow-inner">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="hidden sm:inline text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Room:</span>
               <span className="font-mono font-bold text-xs text-cyan-300 tracking-wide">
-                {roomId}
+                #{roomId}
               </span>
             </div>
 

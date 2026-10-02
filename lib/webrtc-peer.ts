@@ -68,13 +68,16 @@ export class P2PManager {
     this.callbacks = callbacks;
   }
 
-  public init(roomId: string, customPeerServerHost?: string): Promise<string> {
+  public init(roomId: string, isHostHint?: boolean, customPeerServerHost?: string): Promise<string> {
     this.roomId = roomId;
 
-    return new Promise((resolve, reject) => {
-      // Clean numeric peer ID
+    return new Promise((resolve) => {
+      // Deterministic Host ID: peer-{roomId}-host
+      // Guest ID: peer-{roomId}-{randomSuffix}
       const randomSuffix = Math.floor(100 + Math.random() * 900).toString();
-      const fullPeerId = `peer-${roomId}-${randomSuffix}`;
+      const hostPeerId = `peer-${roomId}-host`;
+      const guestPeerId = `peer-${roomId}-${randomSuffix}`;
+      const initialId = isHostHint ? hostPeerId : guestPeerId;
 
       // Initialize Same-System Tab Sync via BroadcastChannel API
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -112,7 +115,7 @@ export class P2PManager {
           // Announce join to same-system tabs
           this.broadcastChannel.postMessage({
             action: 'TAB_JOIN',
-            senderId: fullPeerId
+            senderId: initialId
           });
         } catch (e) {
           console.warn('BroadcastChannel error:', e);
@@ -172,26 +175,60 @@ export class P2PManager {
         }
       }
 
-      this.peer = new Peer(fullPeerId, config);
+      const connectGuestToHost = () => {
+        let attempts = 0;
+        const tryConnect = () => {
+          if (this.connections.has(hostPeerId) || attempts >= 10) return;
+          attempts++;
+          this.connectToPeer(hostPeerId);
+          setTimeout(tryConnect, 1500);
+        };
+        setTimeout(tryConnect, 300);
+      };
 
-      this.peer.on('open', (id) => {
-        this.peerId = id;
-        this.callbacks.onStatusChange?.('connected', `Your Peer ID: ${id}`);
-        resolve(id);
-      });
+      const startPeer = (assignedId: string, isHostAttempt: boolean) => {
+        try {
+          const peer = new Peer(assignedId, config);
+          this.peer = peer;
 
-      this.peer.on('connection', (conn) => {
-        this.setupConnection(conn);
-      });
+          peer.on('open', (id) => {
+            this.peerId = id;
+            this.callbacks.onStatusChange?.('connected', `Your Peer ID: ${id}`);
+            if (id !== hostPeerId) {
+              connectGuestToHost();
+            }
+            resolve(id);
+          });
 
-      this.peer.on('error', (err) => {
-        console.error('PeerJS error:', err);
-        // Soft fallback for peer initialization errors
-        if (!this.peerId) {
-          this.peerId = fullPeerId;
-          resolve(fullPeerId);
+          peer.on('connection', (conn) => {
+            this.setupConnection(conn);
+          });
+
+          peer.on('error', (err: any) => {
+            console.warn('PeerJS status event:', err?.type || err?.message || err);
+            // If host ID was already taken, register as guest instead and connect to the host!
+            if (isHostAttempt && err?.type === 'unavailable-id') {
+              peer.destroy();
+              startPeer(guestPeerId, false);
+              return;
+            }
+
+            if (!this.peerId) {
+              this.peerId = assignedId;
+              if (assignedId !== hostPeerId) {
+                connectGuestToHost();
+              }
+              resolve(assignedId);
+            }
+          });
+        } catch (e) {
+          console.error('Peer init exception:', e);
+          this.peerId = assignedId;
+          resolve(assignedId);
         }
-      });
+      };
+
+      startPeer(initialId, isHostHint !== false);
     });
   }
 
