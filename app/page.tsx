@@ -29,7 +29,7 @@ export default function LandingPage() {
 
   const handleCreateRoom = () => {
     const newRoom = generateRoomId();
-    router.push(`/${newRoom}`);
+    router.push(`/${newRoom}?host=1`);
   };
 
   const handleJoinRoom = (e: React.FormEvent) => {

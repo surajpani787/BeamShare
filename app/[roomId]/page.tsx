@@ -40,8 +40,20 @@ export default function RoomPage({ params }: RoomPageProps) {
   const [transfers, setTransfers] = useState<FileTransferState[]>([]);
 
   // Zero-Database Host Knocking & Access Approval State
-  const [isApproved, setIsApproved] = useState<boolean>(false);
-  const [requestState, setRequestState] = useState<'checking' | 'idle' | 'pending' | 'rejected'>('checking');
+  const [isApproved, setIsApproved] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('host') === '1' || sp.get('create') === '1') return true;
+    }
+    return false;
+  });
+  const [requestState, setRequestState] = useState<'checking' | 'idle' | 'pending' | 'rejected'>(() => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('host') === '1' || sp.get('create') === '1') return 'idle';
+    }
+    return 'checking';
+  });
   const [rejectionReason, setRejectionReason] = useState<string>('');
   const [incomingRequests, setIncomingRequests] = useState<IncomingRequest[]>([]);
 
@@ -139,24 +151,64 @@ export default function RoomPage({ params }: RoomPageProps) {
 
         socketRef.current = socket;
 
+        let checkRoomTimeout: NodeJS.Timeout | null = null;
+
+        const autoAdmitAsHost = () => {
+          if (!isMounted) return;
+          if (checkRoomTimeout) {
+            clearTimeout(checkRoomTimeout);
+            checkRoomTimeout = null;
+          }
+          setIsApproved(true);
+          setRequestState('idle');
+          socket.emit('join-room', { roomId, peerId: assignedPeerId });
+        };
+
+        // If URL has ?host=1, user just created the room: admit immediately with zero delay
+        const isUrlHost = typeof window !== 'undefined' && 
+          (new URLSearchParams(window.location.search).get('host') === '1' ||
+           new URLSearchParams(window.location.search).get('create') === '1');
+
+        if (isUrlHost) {
+          autoAdmitAsHost();
+        } else {
+          // Safety timeout: if signaling server doesn't respond within 1.5s, auto-admit so users are never stuck
+          checkRoomTimeout = setTimeout(() => {
+            autoAdmitAsHost();
+          }, 1500);
+        }
+
         socket.on('connect', () => {
           setStatusDetails('Connected to signaling server');
-          // Check if room has an active host or if we are the first peer (Host)
-          socket.emit('check-room', { roomId });
+          if (!isUrlHost) {
+            socket.emit('check-room', { roomId });
+          } else {
+            socket.emit('join-room', { roomId, peerId: assignedPeerId });
+          }
         });
 
         socket.on('room-status-result', ({ isFirst }: { isFirst: boolean; count: number }) => {
           if (!isMounted) return;
+          if (checkRoomTimeout) {
+            clearTimeout(checkRoomTimeout);
+            checkRoomTimeout = null;
+          }
+
           if (isFirst) {
             // First peer in room is the host: auto-admit into workspace
-            setIsApproved(true);
-            setRequestState('idle');
-            socket.emit('join-room', { roomId, peerId: assignedPeerId });
+            autoAdmitAsHost();
           } else {
             // Room is already active: require host knocking & approval
             setIsApproved(false);
             setRequestState('idle');
           }
+        });
+
+        socket.on('connect_error', (err) => {
+          console.warn('Signaling socket connection warning:', err?.message || err);
+          setStatusDetails('Connecting to signaling network...');
+          // On connection error, auto-admit so users are never trapped on a loading screen
+          autoAdmitAsHost();
         });
 
         // Guest receives approval from host
@@ -190,11 +242,6 @@ export default function RoomPage({ params }: RoomPageProps) {
           setIncomingRequests((prev) =>
             prev.filter((r) => r.requesterSocketId !== requesterSocketId)
           );
-        });
-
-        socket.on('connect_error', (err) => {
-          console.warn('Signaling socket connection warning:', err?.message || err);
-          setStatusDetails('Connecting to signaling network...');
         });
 
         // Peer discovery: Only the newly joined peer initiates connections to existing peers in the room.
