@@ -17,7 +17,8 @@ import {
   Share2, 
   HardDrive,
   Sparkles,
-  ArrowDownCircle
+  ArrowDownCircle,
+  Trash2
 } from 'lucide-react';
 import { FileTransferState } from '@/lib/webrtc-peer';
 
@@ -25,15 +26,19 @@ interface FileSharingProps {
   transfers: FileTransferState[];
   onSendFile: (file: File) => void;
   peerCount: number;
+  onDeleteTransfer?: (transferId: string) => void;
+  onClearAll?: () => void;
 }
 
 export const FileSharing: React.FC<FileSharingProps> = ({
   transfers,
   onSendFile,
-  peerCount
+  peerCount,
+  onDeleteTransfer,
+  onClearAll
 }) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [selectedPreview, setSelectedPreview] = useState<{ url: string; name: string } | null>(null);
+  const [selectedPreview, setSelectedPreview] = useState<{ id: string; url: string; name: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -142,7 +147,19 @@ export const FileSharing: React.FC<FileSharingProps> = ({
         {/* Transfer Queue & History */}
         <div className="flex-1 flex flex-col gap-2">
           <div className="flex items-center justify-between text-xs font-semibold text-slate-400 px-1">
-            <span>Transfer History ({transfers.length})</span>
+            <div className="flex items-center gap-2">
+              <span>Transfer History ({transfers.length})</span>
+              {transfers.length > 0 && onClearAll && (
+                <button
+                  onClick={onClearAll}
+                  className="flex items-center gap-1 text-[11px] font-normal text-slate-500 hover:text-rose-400 transition-colors cursor-pointer px-1.5 py-0.5 rounded hover:bg-rose-500/10"
+                  title="Clear all transferred files"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Clear All</span>
+                </button>
+              )}
+            </div>
             {transfers.length > 0 && (
               <span className="text-[10px] text-slate-500 font-mono">Encrypted P2P Stream</span>
             )}
@@ -189,8 +206,8 @@ export const FileSharing: React.FC<FileSharingProps> = ({
                         <>
                           {item.previewUrl && (
                             <button
-                              onClick={() => setSelectedPreview({ url: item.previewUrl!, name: item.name })}
-                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                              onClick={() => setSelectedPreview({ id: item.id, url: item.previewUrl!, name: item.name })}
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors cursor-pointer"
                               title="Preview Image"
                             >
                               <Eye className="w-3.5 h-3.5" />
@@ -213,6 +230,17 @@ export const FileSharing: React.FC<FileSharingProps> = ({
                           <Clock className="w-3 h-3 animate-spin" />
                           <span>{item.progress}%</span>
                         </div>
+                      )}
+
+                      {/* Delete File/Image Button */}
+                      {onDeleteTransfer && (
+                        <button
+                          onClick={() => onDeleteTransfer(item.id)}
+                          className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-slate-800 hover:border-rose-500/30 transition-all cursor-pointer"
+                          title="Delete file"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       )}
                     </div>
                   </div>
@@ -250,12 +278,37 @@ export const FileSharing: React.FC<FileSharingProps> = ({
           <div className="relative max-w-4xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 overflow-hidden shadow-2xl flex flex-col gap-3">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
               <h3 className="text-sm font-semibold text-slate-200 truncate">{selectedPreview.name}</h3>
-              <button
-                onClick={() => setSelectedPreview(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={selectedPreview.url}
+                  download={selectedPreview.name}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-400 transition-colors"
+                  title="Download Image"
+                >
+                  <Download className="w-4 h-4" />
+                </a>
+                {onDeleteTransfer && (
+                  <button
+                    onClick={() => {
+                      if (selectedPreview) {
+                        onDeleteTransfer(selectedPreview.id);
+                        setSelectedPreview(null);
+                      }
+                    }}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    title="Delete Image"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  onClick={() => setSelectedPreview(null)}
+                  className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                  title="Close preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="flex items-center justify-center max-h-[80vh] overflow-auto">
               <img src={selectedPreview.url} alt={selectedPreview.name} className="max-h-[75vh] object-contain rounded-lg" />

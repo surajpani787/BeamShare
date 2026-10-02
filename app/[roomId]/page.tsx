@@ -243,6 +243,32 @@ export default function RoomPage({ params }: RoomPageProps) {
     }
   };
 
+  // File Transfer Deletion Handlers
+  const handleDeleteTransfer = (transferId: string) => {
+    setTransfers((prev) => {
+      const target = prev.find((t) => t.id === transferId);
+      if (target?.blobUrl) {
+        try {
+          URL.revokeObjectURL(target.blobUrl);
+        } catch {}
+      }
+      return prev.filter((t) => t.id !== transferId);
+    });
+  };
+
+  const handleClearAllTransfers = () => {
+    setTransfers((prev) => {
+      prev.forEach((t) => {
+        if (t.blobUrl) {
+          try {
+            URL.revokeObjectURL(t.blobUrl);
+          } catch {}
+        }
+      });
+      return [];
+    });
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#090d16] text-slate-100 relative">
       {/* Header */}
@@ -328,6 +354,8 @@ export default function RoomPage({ params }: RoomPageProps) {
               transfers={transfers}
               onSendFile={handleSendFile}
               peerCount={peers.length}
+              onDeleteTransfer={handleDeleteTransfer}
+              onClearAll={handleClearAllTransfers}
             />
           </div>
         )}
@@ -347,6 +375,8 @@ export default function RoomPage({ params }: RoomPageProps) {
                 transfers={transfers}
                 onSendFile={handleSendFile}
                 peerCount={peers.length}
+                onDeleteTransfer={handleDeleteTransfer}
+                onClearAll={handleClearAllTransfers}
               />
             </div>
           </div>
