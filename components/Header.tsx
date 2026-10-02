@@ -12,9 +12,12 @@ import {
   Share2,
   Lock,
   Radio,
-  ExternalLink
+  ExternalLink,
+  Smartphone,
+  QrCode
 } from 'lucide-react';
 import { generateRoomId } from '@/lib/slug';
+import { ConnectPhoneModal } from '@/components/ConnectPhoneModal';
 
 interface HeaderProps {
   roomId?: string;
@@ -31,6 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -38,8 +42,14 @@ export const Header: React.FC<HeaderProps> = ({
 
   const handleCopyLink = () => {
     if (typeof window !== 'undefined') {
-      const url = window.location.href;
-      navigator.clipboard.writeText(url);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('host');
+        url.searchParams.delete('create');
+        navigator.clipboard.writeText(url.toString());
+      } catch {
+        navigator.clipboard.writeText(window.location.href.split('?')[0]);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -48,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
   const handleNewRoom = () => {
     const newRoom = generateRoomId();
     if (typeof window !== 'undefined') {
-      window.location.href = `/${newRoom}`;
+      window.location.href = `/${newRoom}?host=1`;
     }
   };
 
@@ -117,27 +127,40 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right Action Buttons */}
         <div className="flex items-center gap-2.5">
           {mounted && roomId && (
-            <button
-              onClick={handleCopyLink}
-              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl font-semibold transition-all duration-200 cursor-pointer shadow-md ${
-                copied
-                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
-                  : 'bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)] hover:shadow-[0_0_20px_rgba(6,182,212,0.5)]'
-              }`}
-              title="Copy room link to clipboard"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Copy Link</span>
-                </>
-              )}
-            </button>
+            <>
+              {/* Connect Phone / QR Code Button */}
+              <button
+                onClick={() => setShowPhoneModal(true)}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl font-semibold bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-700/60 hover:border-cyan-500 shadow-sm transition-all duration-200 cursor-pointer"
+                title="Connect mobile phone via QR code"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Connect Phone</span>
+                <span className="sm:hidden">Phone</span>
+              </button>
+
+              <button
+                onClick={handleCopyLink}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl font-semibold transition-all duration-200 cursor-pointer shadow-md ${
+                  copied
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                    : 'bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)] hover:shadow-[0_0_20px_rgba(6,182,212,0.5)]'
+                }`}
+                title="Copy room link to clipboard"
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Copy Link</span>
+                  </>
+                )}
+              </button>
+            </>
           )}
 
           <button
@@ -150,6 +173,15 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
       </div>
+
+      {/* QR Code / Mobile Connection Modal */}
+      {roomId && (
+        <ConnectPhoneModal
+          isOpen={showPhoneModal}
+          onClose={() => setShowPhoneModal(false)}
+          roomId={roomId}
+        />
+      )}
     </header>
   );
 };

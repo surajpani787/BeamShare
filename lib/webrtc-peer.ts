@@ -58,14 +58,42 @@ export class P2PManager {
   private connections: Map<string, DataConnection> = new Map();
   private pendingConnections: Set<string> = new Set();
   private localTabPeers: Set<string> = new Set();
+  private socketPeers: Set<string> = new Set();
   private broadcastChannel: BroadcastChannel | null = null;
   private callbacks: WebRTCCallbacks;
   private currentCode: string = '';
   private currentLanguage: string = 'javascript';
   private activeIncomingTransfers: Map<string, FileTransferState> = new Map();
+  private processedRelayMessages: Set<string> = new Set();
+  private socket: any = null;
 
   constructor(callbacks: WebRTCCallbacks) {
     this.callbacks = callbacks;
+  }
+
+  public setSocket(socket: any) {
+    this.socket = socket;
+  }
+
+  public handleSocketPeers(peers: string[]) {
+    peers.forEach((id) => {
+      if (id && id !== this.peerId) {
+        this.socketPeers.add(id);
+      }
+    });
+    this.callbacks.onPeerConnect?.('network', this.getTotalPeerCount());
+  }
+
+  public handleSocketPeerJoined(peerId: string) {
+    if (peerId && peerId !== this.peerId) {
+      this.socketPeers.add(peerId);
+      this.callbacks.onPeerConnect?.(peerId, this.getTotalPeerCount());
+    }
+  }
+
+  public handleSocketPeerLeft(peerId: string) {
+    this.socketPeers.delete(peerId);
+    this.callbacks.onPeerDisconnect?.(peerId, this.getTotalPeerCount());
   }
 
   public init(roomId: string, isHostHint?: boolean, customPeerServerHost?: string): Promise<string> {
@@ -74,10 +102,13 @@ export class P2PManager {
     return new Promise((resolve) => {
       // Deterministic Host ID: peer-{roomId}-host
       // Guest ID: peer-{roomId}-{randomSuffix}
-      const randomSuffix = Math.floor(100 + Math.random() * 900).toString();
+      const randomSuffix = Math.floor(1000 + Math.random() * 9000).toString();
       const hostPeerId = `peer-${roomId}-host`;
       const guestPeerId = `peer-${roomId}-${randomSuffix}`;
-      const initialId = isHostHint ? hostPeerId : guestPeerId;
+      
+      // If host hint is explicitly true or undefined (first visitor), attempt host ID first
+      const shouldAttemptHost = isHostHint !== false;
+      const initialId = shouldAttemptHost ? hostPeerId : guestPeerId;
 
       // Initialize Same-System Tab Sync via BroadcastChannel API
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -112,16 +143,16 @@ export class P2PManager {
             }
           };
 
-          // Announce join to same-system tabs
           this.broadcastChannel.postMessage({
             action: 'TAB_JOIN',
             senderId: initialId
           });
         } catch (e) {
-          console.warn('BroadcastChannel error:', e);
+          console.warn('BroadcastChannel notice:', e);
         }
       }
 
+      // High-availability public STUN servers for WebRTC NAT traversal
       const iceServers: any[] = [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
@@ -129,22 +160,7 @@ export class P2PManager {
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:stun.cloudflare.com:3478' },
-        { urls: 'stun:global.stun.twilio.com:3478' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
+        { urls: 'stun:stun.services.mozilla.com' }
       ];
 
       // Support custom TURN credentials via environment variables if provided
@@ -178,12 +194,12 @@ export class P2PManager {
       const connectGuestToHost = () => {
         let attempts = 0;
         const tryConnect = () => {
-          if (this.connections.has(hostPeerId) || attempts >= 10) return;
+          if (this.connections.has(hostPeerId) || attempts >= 8) return;
           attempts++;
           this.connectToPeer(hostPeerId);
-          setTimeout(tryConnect, 1500);
+          setTimeout(tryConnect, 2000);
         };
-        setTimeout(tryConnect, 300);
+        setTimeout(tryConnect, 400);
       };
 
       const startPeer = (assignedId: string, isHostAttempt: boolean) => {
@@ -205,10 +221,13 @@ export class P2PManager {
           });
 
           peer.on('error', (err: any) => {
-            console.warn('PeerJS status event:', err?.type || err?.message || err);
-            // If host ID was already taken, register as guest instead and connect to the host!
+            console.warn('PeerJS node event:', err?.type || err?.message || err);
+
+            // If host ID was already claimed by room creator, smoothly switch to guest ID and connect to host!
             if (isHostAttempt && err?.type === 'unavailable-id') {
-              peer.destroy();
+              try {
+                peer.destroy();
+              } catch {}
               startPeer(guestPeerId, false);
               return;
             }
@@ -222,13 +241,13 @@ export class P2PManager {
             }
           });
         } catch (e) {
-          console.error('Peer init exception:', e);
+          console.error('Peer initialization exception:', e);
           this.peerId = assignedId;
           resolve(assignedId);
         }
       };
 
-      startPeer(initialId, isHostHint !== false);
+      startPeer(initialId, shouldAttemptHost);
     });
   }
 
@@ -243,29 +262,39 @@ export class P2PManager {
     }
 
     this.pendingConnections.add(targetPeerId);
+
+    // Timeout safety: remove from pending after 5s so reconnect retries are never locked out
+    const pendingTimer = setTimeout(() => {
+      this.pendingConnections.delete(targetPeerId);
+    }, 5000);
+
     try {
       const conn = this.peer.connect(targetPeerId, { reliable: true });
-      this.setupConnection(conn);
+      this.setupConnection(conn, pendingTimer);
     } catch (err) {
-      console.error(`Error connecting to ${targetPeerId}:`, err);
+      clearTimeout(pendingTimer);
+      console.error(`Error connecting to peer ${targetPeerId}:`, err);
       this.pendingConnections.delete(targetPeerId);
     }
   }
 
-  private setupConnection(conn: DataConnection) {
-    // Avoid creating duplicate connections if we already have an open one
+  private setupConnection(conn: DataConnection, pendingTimer?: any) {
     if (this.connections.has(conn.peer)) {
       const existing = this.connections.get(conn.peer);
       if (existing && existing.open) {
+        if (pendingTimer) clearTimeout(pendingTimer);
+        this.pendingConnections.delete(conn.peer);
         return;
       }
     }
 
     conn.on('open', () => {
+      if (pendingTimer) clearTimeout(pendingTimer);
       this.pendingConnections.delete(conn.peer);
       this.connections.set(conn.peer, conn);
       this.callbacks.onPeerConnect?.(conn.peer, this.getTotalPeerCount());
 
+      // If we have current workspace code, immediately sync it with the newly connected peer!
       if (this.currentCode) {
         conn.send({
           type: 'CODE_SYNC',
@@ -283,17 +312,42 @@ export class P2PManager {
     });
 
     conn.on('close', () => {
+      if (pendingTimer) clearTimeout(pendingTimer);
       this.pendingConnections.delete(conn.peer);
       this.connections.delete(conn.peer);
       this.callbacks.onPeerDisconnect?.(conn.peer, this.getTotalPeerCount());
     });
 
     conn.on('error', (err) => {
-      console.error(`Connection error with ${conn.peer}:`, err);
+      if (pendingTimer) clearTimeout(pendingTimer);
       this.pendingConnections.delete(conn.peer);
       this.connections.delete(conn.peer);
       this.callbacks.onPeerDisconnect?.(conn.peer, this.getTotalPeerCount());
     });
+  }
+
+  public handleRelayedData(data: any) {
+    if (!data || typeof data !== 'object') return;
+    if (data.senderId && data.senderId === this.peerId) return;
+
+    // Deduplication check
+    const msgKey =
+      data.type === 'FILE_CHUNK'
+        ? `${data.transferId}-${data.chunkIndex}`
+        : data.type === 'CODE_SYNC'
+        ? `code-${data.code?.length}-${data.language}`
+        : null;
+
+    if (msgKey) {
+      if (this.processedRelayMessages.has(msgKey)) return;
+      this.processedRelayMessages.add(msgKey);
+      if (this.processedRelayMessages.size > 2000) {
+        const first = this.processedRelayMessages.values().next().value;
+        if (first) this.processedRelayMessages.delete(first);
+      }
+    }
+
+    this.handleIncomingData(data, data.senderId || 'relay');
   }
 
   private handleIncomingData(data: any, fromPeerId: string) {
@@ -339,6 +393,10 @@ export class P2PManager {
       case 'FILE_CHUNK': {
         const transfer = this.activeIncomingTransfers.get(data.transferId);
         if (transfer && transfer.chunks) {
+          if (transfer.chunks[data.chunkIndex]) {
+            // Already received this chunk (e.g. from both WebRTC and relay)
+            return;
+          }
           const chunkBuffer = base64ToArrayBuffer(data.chunkData);
           transfer.chunks[data.chunkIndex] = chunkBuffer;
           transfer.receivedChunks += 1;
@@ -381,7 +439,11 @@ export class P2PManager {
 
     // 1. Send via WebRTC DataChannels
     this.connections.forEach((conn) => {
-      if (conn.open) conn.send(payload);
+      if (conn.open) {
+        try {
+          conn.send(payload);
+        } catch {}
+      }
     });
 
     // 2. Broadcast to same-system tabs
@@ -390,6 +452,14 @@ export class P2PManager {
       senderId: this.peerId,
       payload
     });
+
+    // 3. Fallback broadcast via signaling socket relay (guarantees delivery across mobile networks/CGNAT)
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('relay-message', {
+        roomId: this.roomId,
+        data: payload
+      });
+    }
   }
 
   public async broadcastFile(file: File, existingTransferId?: string, onProgress?: (progress: number) => void): Promise<string> {
@@ -407,15 +477,27 @@ export class P2PManager {
       senderId: this.peerId
     };
 
-    // 1. Send FILE_START to WebRTC peers & same-system tabs
+    // 1. Send FILE_START to WebRTC peers & same-system tabs & socket relay
     this.connections.forEach((conn) => {
-      if (conn.open) conn.send(startPayload);
+      if (conn.open) {
+        try {
+          conn.send(startPayload);
+        } catch {}
+      }
     });
+
     this.broadcastChannel?.postMessage({
       action: 'DATA_STREAM',
       senderId: this.peerId,
       payload: startPayload
     });
+
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('relay-message', {
+        roomId: this.roomId,
+        data: startPayload
+      });
+    }
 
     // 2. Stream Base64 Chunks
     for (let i = 0; i < totalChunks; i++) {
@@ -428,11 +510,16 @@ export class P2PManager {
         type: 'FILE_CHUNK',
         transferId,
         chunkIndex: i,
-        chunkData: base64Chunk
+        chunkData: base64Chunk,
+        senderId: this.peerId
       };
 
       this.connections.forEach((conn) => {
-        if (conn.open) conn.send(chunkPayload);
+        if (conn.open) {
+          try {
+            conn.send(chunkPayload);
+          } catch {}
+        }
       });
 
       this.broadcastChannel?.postMessage({
@@ -441,10 +528,17 @@ export class P2PManager {
         payload: chunkPayload
       });
 
+      if (this.socket && this.socket.connected) {
+        this.socket.emit('relay-message', {
+          roomId: this.roomId,
+          data: chunkPayload
+        });
+      }
+
       const currentProgress = Math.min(100, Math.round(((i + 1) / totalChunks) * 100));
       onProgress?.(currentProgress);
 
-      if (i % 8 === 0) {
+      if (i % 6 === 0) {
         await new Promise((res) => setTimeout(res, 4));
       }
     }
@@ -458,6 +552,7 @@ export class P2PManager {
       if (conn.open) allPeers.add(id);
     });
     this.localTabPeers.forEach((id) => allPeers.add(id));
+    this.socketPeers.forEach((id) => allPeers.add(id));
     return allPeers.size;
   }
 
@@ -472,12 +567,19 @@ export class P2PManager {
       this.broadcastChannel = null;
     }
 
-    this.connections.forEach((conn) => conn.close());
+    this.connections.forEach((conn) => {
+      try {
+        conn.close();
+      } catch {}
+    });
     this.connections.clear();
     this.localTabPeers.clear();
+    this.socketPeers.clear();
 
     if (this.peer) {
-      this.peer.destroy();
+      try {
+        this.peer.destroy();
+      } catch {}
       this.peer = null;
     }
   }

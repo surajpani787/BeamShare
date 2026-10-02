@@ -86,6 +86,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Zero-Storage Fallback Relay for environments where direct UDP/WebRTC is restricted by mobile carrier NAT
+  socket.on('relay-message', ({ roomId, data }) => {
+    if (!roomId || !data) return;
+    socket.to(roomId).emit('relay-message', {
+      senderSocketId: socket.id,
+      data
+    });
+  });
+
   // Check if room has an active host/peers (Zero-Database)
   socket.on('check-room', ({ roomId }) => {
     const roomPeers = rooms.get(roomId);

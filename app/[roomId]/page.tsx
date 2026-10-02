@@ -50,16 +50,16 @@ export default function RoomPage({ params }: RoomPageProps) {
       (new URLSearchParams(window.location.search).get('host') === '1' ||
        new URLSearchParams(window.location.search).get('create') === '1');
 
-    // Determine signaling server URL (auto-detects production reverse proxy vs local development)
+    // Determine signaling server URL (auto-detects production reverse proxy vs local development / LAN IP)
     const getSignalingUrl = () => {
       if (process.env.NEXT_PUBLIC_SIGNALING_URL) {
         return process.env.NEXT_PUBLIC_SIGNALING_URL;
       }
       if (typeof window !== 'undefined') {
-        const isLocalhost =
-          window.location.hostname === 'localhost' ||
-          window.location.hostname === '127.0.0.1';
-        if (isLocalhost) {
+        const port = window.location.port;
+        // In local development / LAN testing (port 3000), signaling server runs on port 3001
+        // regardless of whether accessed via localhost, 127.0.0.1, or mobile LAN IP (192.168.x.x)
+        if (port === '3000') {
           return `${window.location.protocol}//${window.location.hostname}:3001`;
         }
         return window.location.origin;
@@ -122,7 +122,7 @@ export default function RoomPage({ params }: RoomPageProps) {
         setMyPeerId(assignedPeerId);
         setStatus('alone');
 
-        // Connect to Socket.io signaling server for dual-mesh discovery
+        // Connect to Socket.io signaling server for dual-mesh discovery & zero-storage fallback relay
         const socket = io(signalingUrl, {
           transports: ['websocket', 'polling'],
           reconnectionAttempts: 10,
@@ -130,9 +130,11 @@ export default function RoomPage({ params }: RoomPageProps) {
         });
 
         socketRef.current = socket;
+        manager.setSocket(socket);
 
         socket.on('connect', () => {
-          setStatusDetails('Connected to signaling server');
+          setStatusDetails('Connected to signaling mesh');
+          manager.setSocket(socket);
           socket.emit('join-room', { roomId, peerId: assignedPeerId });
         });
 
@@ -141,18 +143,27 @@ export default function RoomPage({ params }: RoomPageProps) {
           setStatusDetails('Direct P2P mode active');
         });
 
-        // Peer discovery via Socket.io
+        // Dual-transport relay fallback (guarantees real-time sync across mobile carrier networks)
+        socket.on('relay-message', ({ data }: { data: any }) => {
+          manager.handleRelayedData(data);
+        });
+
+        // Peer discovery via Socket.io:
+        // ONLY the newly joined peer initiates connections to existing peers to prevent WebRTC glare collision
         socket.on('room-peers', ({ peers: existingPeers }: { peers: string[] }) => {
+          manager.handleSocketPeers(existingPeers);
           existingPeers.forEach((targetPeerId) => {
             manager.connectToPeer(targetPeerId);
           });
         });
 
         socket.on('peer-joined', ({ peerId: newPeerId }: { peerId: string }) => {
-          manager.connectToPeer(newPeerId);
+          manager.handleSocketPeerJoined(newPeerId);
+          // Wait for incoming handshake from newPeerId (prevents glare)
         });
 
         socket.on('peer-left', ({ peerId: leftPeerId }: { peerId: string }) => {
+          manager.handleSocketPeerLeft(leftPeerId);
           setPeers((prev) => prev.filter((p) => p !== leftPeerId));
         });
       })
