@@ -86,6 +86,47 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Check if room has an active host/peers (Zero-Database)
+  socket.on('check-room', ({ roomId }) => {
+    const roomPeers = rooms.get(roomId);
+    const count = roomPeers ? roomPeers.size : 0;
+    socket.emit('room-status-result', {
+      roomId,
+      isFirst: count === 0,
+      count
+    });
+  });
+
+  // Requester sends connection request to active room peers/host
+  socket.on('request-access', ({ roomId, peerId, displayName }) => {
+    if (!roomId || !peerId) return;
+    socket.to(roomId).emit('incoming-access-request', {
+      requesterSocketId: socket.id,
+      peerId,
+      displayName: displayName || peerId
+    });
+  });
+
+  // Host approves connection request
+  socket.on('accept-access', ({ requesterSocketId, roomId }) => {
+    io.to(requesterSocketId).emit('access-granted', { roomId });
+  });
+
+  // Host declines connection request
+  socket.on('reject-access', ({ requesterSocketId, reason }) => {
+    io.to(requesterSocketId).emit('access-denied', {
+      reason: reason || 'Connection request was declined by the host.'
+    });
+  });
+
+  // Requester cancels their pending request
+  socket.on('cancel-access-request', ({ roomId, peerId }) => {
+    socket.to(roomId).emit('access-request-cancelled', {
+      requesterSocketId: socket.id,
+      peerId
+    });
+  });
+
   // Request room status
   socket.on('get-room-status', ({ roomId }) => {
     const roomPeers = rooms.get(roomId);

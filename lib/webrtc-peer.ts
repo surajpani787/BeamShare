@@ -56,6 +56,7 @@ export class P2PManager {
   public peerId: string = '';
   public roomId: string = '';
   private connections: Map<string, DataConnection> = new Map();
+  private pendingConnections: Set<string> = new Set();
   private localTabPeers: Set<string> = new Set();
   private broadcastChannel: BroadcastChannel | null = null;
   private callbacks: WebRTCCallbacks;
@@ -118,25 +119,44 @@ export class P2PManager {
         }
       }
 
+      const iceServers: any[] = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ];
+
+      // Support custom TURN credentials via environment variables if provided
+      if (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_TURN_URL) {
+        iceServers.unshift({
+          urls: process.env.NEXT_PUBLIC_TURN_URL,
+          username: process.env.NEXT_PUBLIC_TURN_USERNAME || '',
+          credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || ''
+        });
+      }
+
       const config: any = {
         debug: 1,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            {
-              urls: 'turn:openrelay.metered.ca:80',
-              username: 'openrelay',
-              credential: 'openrelay'
-            },
-            {
-              urls: 'turn:openrelay.metered.ca:443',
-              username: 'openrelay',
-              credential: 'openrelay'
-            }
-          ]
+          iceServers
         }
       };
 
@@ -176,16 +196,36 @@ export class P2PManager {
   }
 
   public connectToPeer(targetPeerId: string) {
-    if (!this.peer || this.connections.has(targetPeerId) || targetPeerId === this.peerId) {
+    if (
+      !this.peer ||
+      this.connections.has(targetPeerId) ||
+      this.pendingConnections.has(targetPeerId) ||
+      targetPeerId === this.peerId
+    ) {
       return;
     }
 
-    const conn = this.peer.connect(targetPeerId, { reliable: true });
-    this.setupConnection(conn);
+    this.pendingConnections.add(targetPeerId);
+    try {
+      const conn = this.peer.connect(targetPeerId, { reliable: true });
+      this.setupConnection(conn);
+    } catch (err) {
+      console.error(`Error connecting to ${targetPeerId}:`, err);
+      this.pendingConnections.delete(targetPeerId);
+    }
   }
 
   private setupConnection(conn: DataConnection) {
+    // Avoid creating duplicate connections if we already have an open one
+    if (this.connections.has(conn.peer)) {
+      const existing = this.connections.get(conn.peer);
+      if (existing && existing.open) {
+        return;
+      }
+    }
+
     conn.on('open', () => {
+      this.pendingConnections.delete(conn.peer);
       this.connections.set(conn.peer, conn);
       this.callbacks.onPeerConnect?.(conn.peer, this.getTotalPeerCount());
 
@@ -206,12 +246,14 @@ export class P2PManager {
     });
 
     conn.on('close', () => {
+      this.pendingConnections.delete(conn.peer);
       this.connections.delete(conn.peer);
       this.callbacks.onPeerDisconnect?.(conn.peer, this.getTotalPeerCount());
     });
 
     conn.on('error', (err) => {
       console.error(`Connection error with ${conn.peer}:`, err);
+      this.pendingConnections.delete(conn.peer);
       this.connections.delete(conn.peer);
       this.callbacks.onPeerDisconnect?.(conn.peer, this.getTotalPeerCount());
     });
@@ -374,10 +416,16 @@ export class P2PManager {
   }
 
   public getTotalPeerCount(): number {
-    return Math.max(this.connections.size, this.localTabPeers.size);
+    const allPeers = new Set<string>();
+    this.connections.forEach((conn, id) => {
+      if (conn.open) allPeers.add(id);
+    });
+    this.localTabPeers.forEach((id) => allPeers.add(id));
+    return allPeers.size;
   }
 
   public disconnect() {
+    this.pendingConnections.clear();
     if (this.broadcastChannel) {
       this.broadcastChannel.postMessage({
         action: 'TAB_LEAVE',
